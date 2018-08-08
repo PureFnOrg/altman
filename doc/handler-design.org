@@ -1,0 +1,180 @@
+* Event Sourcing Framework Design
+
+** Goals
+
+- Declarative approach to specifying handlers and processes
+- Support tooling, both for system analysis and visualization, and
+  management
+- Separation of high and low level, business domain and implementation
+- Clear, simple method for implementing event sourcing components
+
+** Types of components
+
+- Command handlers
+- Event handlers
+- Gateways
+- Views
+
+** Building blocks
+
+We already have some low level building blocks, including a simple
+abstraction over stream processors and state stores.
+
+This is the essential processor abstraction:
+
+~ processor :: State s, Message m => s -> m -> [s [m]] ~
+
+A function of State and Message to a tuple of new State and collection
+of 0 or more Messages.
+
+This is good as far as it goes, but there are a number of things that
+still must be done by hand when implementing a handler directly on
+this abstraction:
+
+- Extract the relevant command or event payload from the message
+- Coerce the version of the event or command to the one expected by
+  the handler
+- Construct full message objects for any responses
+- Manage the topics separately and encode their names in the processor
+  function
+
+These are all concerns that should be handled by the framework.
+
+** Handler Abstraction
+
+The considerations that need to be addressed in defining a handler are:
+
+- What types of events or commands it expects as input
+- The versions it expects
+- How it expects to correlate events and commands (in other words,
+  partition key)
+- What types of events will be emitted as output, and their versions
+- How each type of event should be handled
+
+Handlers are defined in two parts, in a division that somewhat
+resembles Clojure multimethods. There is a declaration and
+implementation.
+
+The declaration can be viewed as somewhat analogous to a header in C.
+It specifies:
+
+- Handler name
+- Input events and/or commands
+- Input partitioning scheme
+- Output events and/or command responses
+
+Implementations are specified in terms of the type or types of command
+or events expected (including version), and a handler function that
+processes those inputs. They can optionally specify a state key, which
+will be used to pass only the relevant part of the state to the
+handler.
+
+Event handler implementations have a somewhat similar signature to
+processors.
+
+~ event-handler :: State s, Payload p => s -> p -> [s [p]] ~
+
+Event handler implementations are functions of State and Payload -
+which could be the payload portion of either an event or command - to
+a new State and collection of zero or more Payloads.
+
+These are distinct from processor functions in several ways. They are
+dealing directly with the event or command data rather than the
+wrapping message or metadata envelope. This is true of both their
+input and output messages. Versioning of inputs is also abstracted
+away - they will receive a payload which has been transformed to the
+version specified in the declaration.
+
+The state is also optionally handled in a simpler way. It's a common
+pattern in processors that they often deal with a single key in their
+state which is taken from one of the fields of their input. Event
+handler implementations can optionally declare the input key which
+determines the relevant key in the state, and only this part of the
+state will be passed in.
+
+*** Event Handler Declaration
+
+This is the format of event handler declarations. The inputs and
+outputs are specified in terms of unversioned event types.
+
+#+begin_src clojure
+  (def-event-handler handler-name
+    ;; inputs, a map of event type to required partitioning key
+    {::an-input-event ::partition-key
+     ::another-input-event ::another-partition-key}
+    ;; outputs
+    #{::some-output-event})
+#+end_src
+
+*** Command Handler Declaration
+
+This is the format of command handler declarations. Its format is
+similar to event handler declarations, with the addition command
+responses.
+
++begin_src clojure
+(def-command-handler handler-name
+  ;; inputs, a map of event type to required partitioning key
+  #{::some-input-command ::partition-key
+    ::another-input-command ::another-partition-key
+    ::an-input-event ::event-partition-key}
+  ;; responses - could potentially strip these out since they're in the command spec
+  #{::command-response-1
+    ::command-response-2}
+  ;; outputs
+  #{::some-output-event})
+#+end_src
+
+*** Event Handler Implementation
+
+To implement an event handler, `implement-event-handler` can be called
+one or more times to supply different handler functions for the types
+of inputs the handler accepts. The below example defines an event
+handler implementation that handles two event types. It's likely best
+practice to define a separate implementation whenever the handling
+logic is going to be different, enabling clean and simple handler
+functions.
+
+In this way they're somewhat similar to multimethods, although with a
+fixed dispatch mechanism and the ability to capture several dispatch
+values with one method.
+
+#+begin_src clojure
+(implement-event-handler handler-name
+  ;; what input events are being handled by this implementation.
+  ;; map of event type to version number
+  {::some-event-type 1
+   ::another-event-type 2}
+  ;; the handler function
+  handle-inputs
+  ;; optionally, the state key
+  ::key-in-input)
+#+end_src
+
+*** Command Handler Implementation
+
+The format for command handler implementations is essentially the same
+as for event handler implementations.
+
+#+begin_src clojure
+(implement-command-handler handler-name
+  ;; what input events are being handled by this implementation.
+  ;; map of event type to version number
+  {::some-command-type 1
+   ::another-command-type 2
+   ::an-event-type 2}
+  ;; the handler function
+  handle-inputs
+  ;; optionally, the state key
+  ::key-in-input)
+#+end_src
+
+** Other ideas
+
+- Automatically restructure large state keys behind the scenes
+- Tools to build handlers that with separate state update and event
+  emission
+- State specs
+- How to handle repartitioning that's being done manually
+- How to declare simple processors in general
+- How to declare events/commands coming from Rashomon
